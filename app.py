@@ -32,7 +32,20 @@ def extract_tables_with_pdfplumber(file, max_pages: int = 10):
 
         for page_idx in range(num_pages):
             page = pdf.pages[page_idx]
-            tables = page.extract_tables()
+            tables = page.extract_tables(
+    table_settings={
+        "vertical_strategy": "lines",
+        "horizontal_strategy": "lines",
+        "intersection_tolerance": 5,
+        "snap_tolerance": 3,
+        "join_tolerance": 3,
+        "edge_min_length": 20,
+        "min_words_vertical": 2,
+        "min_words_horizontal": 1,
+        "text_tolerance": 3,
+    }
+)
+
 
             for t_idx, table in enumerate(tables):
                 # table is a list of rows; each row is a list of cells

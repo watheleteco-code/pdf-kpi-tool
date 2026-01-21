@@ -112,13 +112,13 @@ def extract_tables_with_camelot(file, max_pages: int = 10):
 
 # ---------- Text-line fallback (works for “aligned text” statements) ----------
 
-NUM_PATTERN = r"\(?-?\d[\d,]*\.?\d*\)?"
-
 HEADER_KEYWORDS = [
     "years ended", "year ended", "for the year ended",
     "years ended december", "year ended december",
     "unaudited", "in thousands", "in millions"
 ]
+
+NUM_PATTERN = r"\(?-?\d[\d,]*\.?\d*\)?"
 
 def extract_lines(file, max_pages: int = 10):
     lines = []
@@ -168,16 +168,14 @@ def parse_text_aligned_statement(lines, years=None):
                 continue
             filtered.append(tok)
 
-        # After removing years, we still need at least 2 values
         if len(filtered) < 2:
             continue
 
-        # 4) Extra guard: drop date-like lines (day number + year pattern)
-        # Example: "Years Ended December 31 2003" would have remaining "31" and maybe nothing else.
-        # If first value is 1..31 and no other big numbers, skip.
+        # 4) Convert first two values
         v1 = clean_number(filtered[0])
         v2 = clean_number(filtered[1])
 
+        # Extra guard: drop date-like lines (day number + small/empty value)
         if v1 is not None and 1 <= v1 <= 31 and (v2 is None or abs(v2) < 1000):
             continue
 
@@ -186,7 +184,7 @@ def parse_text_aligned_statement(lines, years=None):
         idx = line.find(first)
         label = line[:idx].strip(" .:-\t")
         if len(label) < 2:
-         continue
+            continue
 
         # ---- LABEL NORMALIZATION ----
         label = re.sub(r"[.\u2026]+", " ", label)   # remove dotted leaders
@@ -194,9 +192,9 @@ def parse_text_aligned_statement(lines, years=None):
         label = re.sub(r"\s+", " ", label)          # normalize whitespace
         # ----------------------------
 
-rows.append([label, v1, v2])
+        rows.append([label, v1, v2])
 
-
+    # IMPORTANT: this is OUTSIDE the for-loop
     if not rows:
         return None
 

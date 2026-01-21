@@ -17,6 +17,7 @@ uploaded_file = st.file_uploader("Upload a financial statement PDF", type=["pdf"
 # -------------------------
 
 def is_text_based_pdf(file) -> bool:
+    """Heuristic: text-based PDFs have a meaningful number of text chars."""
     try:
         with pdfplumber.open(file) as pdf:
             total_chars = sum(len(page.chars) for page in pdf.pages)
@@ -26,6 +27,7 @@ def is_text_based_pdf(file) -> bool:
 
 
 def clean_number(x):
+    """Convert PDF-extracted numeric strings to float; handle commas and parentheses negatives."""
     if isinstance(x, str):
         x = x.replace(",", "").replace("$", "").strip()
         if x.startswith("(") and x.endswith(")"):
@@ -45,6 +47,7 @@ def safe_div(a, b):
 
 
 def normalize_table(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure first col is label, others are values."""
     df = df.copy()
     df.columns = range(df.shape[1])
     df.rename(columns={0: "label"}, inplace=True)
@@ -52,6 +55,7 @@ def normalize_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def extract_tables_with_pdfplumber(file, max_pages: int = 10):
+    """Extract tables with pdfplumber (works best for bordered/line-detected tables)."""
     extracted = []
     with pdfplumber.open(file) as pdf:
         num_pages = min(len(pdf.pages), max_pages)
@@ -83,6 +87,10 @@ def extract_tables_with_pdfplumber(file, max_pages: int = 10):
 
 
 def extract_tables_with_camelot(file, max_pages: int = 10):
+    """
+    Try Camelot in both stream and lattice modes.
+    Some PDFs work only with one of them.
+    """
     results = []
     pages = ",".join(str(i) for i in range(1, max_pages + 1))
 
@@ -106,7 +114,7 @@ def extract_tables_with_camelot(file, max_pages: int = 10):
     return results
 
 
-# ---------- Text-line fallback (aligned text statements) ----------
+# ---------- Text-line fallback (works for “aligned text” statements) ----------
 
 HEADER_KEYWORDS = [
     "years ended", "year ended", "for the year ended",
@@ -129,6 +137,10 @@ def extract_lines(file, max_pages: int = 10):
 
 
 def detect_years(lines):
+    """
+    Try to detect year headers like: '2003 2004' near the top of the statement.
+    If not found, returns None.
+    """
     for line in lines[:25]:
         years = re.findall(r"\b(?:19|20)\d{2}\b", line)
         if len(years) >= 2:
@@ -143,13 +155,16 @@ def parse_text_aligned_statement(lines, years=None):
     for line in lines:
         lower = line.lower()
 
+        # 1) Skip header / meta lines
         if any(k in lower for k in HEADER_KEYWORDS):
             continue
 
+        # 2) Find numeric tokens
         nums = re.findall(NUM_PATTERN, line)
         if len(nums) < 2:
             continue
 
+        # 3) Remove pure year tokens from candidates (e.g., 2003, 2004)
         filtered = []
         for tok in nums:
             tok_clean = tok.strip("()").replace(",", "")
@@ -160,23 +175,26 @@ def parse_text_aligned_statement(lines, years=None):
         if len(filtered) < 2:
             continue
 
+        # 4) Convert first two values
         v1 = clean_number(filtered[0])
         v2 = clean_number(filtered[1])
 
-        # drop date-like lines
+        # Extra guard: drop date-like lines (day number + small/empty value)
         if v1 is not None and 1 <= v1 <= 31 and (v2 is None or abs(v2) < 1000):
             continue
 
+        # 5) Label is before the first remaining numeric token
         first = filtered[0]
         idx = line.find(first)
         label = line[:idx].strip(" .:-\t")
         if len(label) < 2:
             continue
 
-        # label normalization
-        label = re.sub(r"[.\u2026]+", " ", label)
-        label = label.replace("$", "").strip()
-        label = re.sub(r"\s+", " ", label)
+        # ---- LABEL NORMALIZATION ----
+        label = re.sub(r"[.\u2026]+", " ", label)   # remove dotted leaders
+        label = label.replace("$", "").strip()      # remove currency symbol
+        label = re.sub(r"\s+", " ", label)          # normalize whitespace
+        # ----------------------------
 
         rows.append([label, v1, v2])
 
@@ -198,53 +216,16 @@ def get_value_contains(df, label_contains: str, col: str):
     return hit.iloc[0][col]
 
 
-def get_value_exact(df, label: str, col: str):
-    hit = df[df["label"] == label]
-    if hit.empty:
-        return None
-    return hit.iloc[0][col]
-
-
-# -------------------------
-# Auto-mapping (preselect dropdowns)
-# -------------------------
-
-CANONICAL_MATCHERS = {
-    "Cash": ["cash", "cash and equivalents"],
-    "Current Assets": ["total current assets", "current assets"],
-    "Current Liabilities": ["total current liabilities", "current liabilities"],
-    "Total Assets": ["total assets"],
-    "Total Liabilities": ["total liabilities"],
-    "Equity": ["total equity", "equity", "shareholders equity", "stockholders equity"],
-    "Total Debt": ["total debt", "long-term debt", "borrowings", "notes payable", "debt"],
-}
-
-
-def normalize_label(s: str) -> str:
-    return re.sub(r"[^a-z]", "", s.lower())
-
-
-def auto_map_labels(statement_labels, matchers, threshold: float = 0.65):
-    mapping = {}
-    norm_labels = {lbl: normalize_label(lbl) for lbl in statement_labels}
-
-    for item, keywords in matchers.items():
-        best_match = None
-        best_score = 0.0
-
-        for lbl, norm_lbl in norm_labels.items():
-            for kw in keywords:
-                score = SequenceMatcher(None, norm_lbl, normalize_label(kw)).ratio()
-                if score > best_score:
-                    best_score = score
-                    best_match = lbl
-
-        if best_score >= threshold and best_match is not None:
-            mapping[item] = best_match
-        else:
-            mapping[item] = "(not mapped)"
-
-    return mapping
+def v_any(df, col: str, *patterns: str):
+    """
+    Return first non-null value whose label contains any of the patterns (case-insensitive).
+    Patterns are tried in order.
+    """
+    for p in patterns:
+        hit = df[df["label"].str.contains(p, case=False, na=False)]
+        if not hit.empty:
+            return hit.iloc[0][col]
+    return None
 
 
 # -------------------------
@@ -292,66 +273,80 @@ def render_income_statement_kpis(statement_df: pd.DataFrame):
 def render_balance_sheet_kpis(statement_df: pd.DataFrame):
     st.subheader("KPI selection (Balance Sheet)")
 
-    # choose year/period column
     cols = [c for c in statement_df.columns if c != "label"]
     year_col = st.selectbox("Select period/column", cols, key="bs_year")
 
-    # helper to get values by "contains"
-    def v(contains: str):
-        return get_value_contains(statement_df, contains, year_col)
+    col = year_col
 
-    # --- Auto-extract core inputs from THIS type of balance sheet ---
-    cash = v("Cash")
-    current_assets = v("Total current assets")
-    current_liabilities = v("Total current liabilities")
-    total_assets = v("Total assets")
-    equity = v("Total owners")  # matches "Total owners' equity"
+    # Robust pattern matching (no mapping UI)
+    cash = v_any(statement_df, col, "cash", "cash and equivalents")
 
-    # debt components (often split)
-    note_payable = v("Note payable")
-    long_term_debt = v("Long-term debt")
+    current_assets = v_any(statement_df, col, "total current assets", "current assets")
 
-    # Derived metrics
+    current_liabilities = v_any(
+        statement_df, col, "total current liabilities", "current liabilities"
+    )
+
+    total_assets = v_any(statement_df, col, "total assets")
+
+    equity = v_any(
+        statement_df,
+        col,
+        "total owners",
+        "owners equity",
+        "shareholders equity",
+        "stockholders equity",
+        "equity",
+    )
+
+    note_payable = v_any(statement_df, col, "note payable", "notes payable")
+
+    long_term_debt = v_any(
+        statement_df,
+        col,
+        "long-term debt",
+        "long term debt",
+        "long-term notes",
+        "long term notes",
+        "long-term",
+    )
+
+    # Derived totals
     total_debt = None
     if note_payable is not None or long_term_debt is not None:
         total_debt = (note_payable or 0) + (long_term_debt or 0)
 
-    total_liabilities = None
-    if current_liabilities is not None or long_term_debt is not None:
+    total_liabilities = v_any(statement_df, col, "total liabilities")
+
+    if total_liabilities is None and (current_liabilities is not None or long_term_debt is not None):
         total_liabilities = (current_liabilities or 0) + (long_term_debt or 0)
 
-    # If totals missing, try to derive liabilities from Assets - Equity
     if total_liabilities is None and total_assets is not None and equity is not None:
         total_liabilities = total_assets - equity
 
-    # KPIs
-    balance_kpis = [
-        "Current Ratio",
-        "Cash Ratio",
-        "Debt to Equity",
-        "Debt Ratio",
-        "Equity Ratio",
-    ]
+    # Optional transparency
+    with st.expander("Show detected values (auto)"):
+        st.write(
+            {
+                "cash": cash,
+                "current_assets": current_assets,
+                "current_liabilities": current_liabilities,
+                "total_assets": total_assets,
+                "equity": equity,
+                "note_payable": note_payable,
+                "long_term_debt": long_term_debt,
+                "total_debt (derived)": total_debt,
+                "total_liabilities (derived)": total_liabilities,
+            }
+        )
+
+    balance_kpis = ["Current Ratio", "Cash Ratio", "Debt to Equity", "Debt Ratio", "Equity Ratio"]
     selected_kpis = st.multiselect(
         "Select KPIs",
         balance_kpis,
-        default=["Current Ratio", "Debt Ratio"],
+        default=["Current Ratio", "Debt Ratio", "Debt to Equity", "Equity Ratio", "Cash Ratio"],
         key="bs_kpis",
     )
-
-    # Optional transparency (not interactive)
-    with st.expander("Show detected values (auto)"):
-        st.write({
-            "cash": cash,
-            "current_assets": current_assets,
-            "current_liabilities": current_liabilities,
-            "total_assets": total_assets,
-            "equity": equity,
-            "note_payable": note_payable,
-            "long_term_debt": long_term_debt,
-            "total_debt (derived)": total_debt,
-            "total_liabilities (derived)": total_liabilities,
-        })
 
     st.subheader("KPI Results")
 
@@ -376,7 +371,6 @@ def render_balance_sheet_kpis(statement_df: pd.DataFrame):
         st.write("Equity Ratio:", "N/A" if r is None else f"{r:.2%}")
 
 
-
 # -------------------------
 # Main app flow
 # -------------------------
@@ -396,6 +390,7 @@ st.success("Text-based PDF detected ✅")
 
 max_pages = st.slider("Pages to scan (from start)", min_value=1, max_value=50, value=15)
 
+# Try extractors
 with st.spinner("Extracting tables from the PDF..."):
     tables = extract_tables_with_pdfplumber(uploaded_file, max_pages=max_pages)
 
@@ -407,7 +402,7 @@ st.write(f"Tables found: **{len(tables)}**")
 
 statement_df = None
 
-# --- If no tables, parse as aligned text ---
+# If still nothing, do text-line parsing fallback
 if len(tables) == 0:
     st.info("No tables extracted. Parsing as text-aligned statement...")
     lines = extract_lines(uploaded_file, max_pages=max_pages)
@@ -423,7 +418,7 @@ if len(tables) == 0:
 
     statement_df = df_text
 
-# --- If tables exist, user selects and we normalize ---
+# If we have tables, show table picker + normalization
 else:
     options = [
         f"Page {t['page']} — Table {t['table_index']} ({t['df'].shape[0]}x{t['df'].shape[1]})"
@@ -446,7 +441,7 @@ else:
 
     statement_df = df
 
-# --- KPI section (works for BOTH extraction paths) ---
+# KPI engine
 st.divider()
 st.subheader("KPI Engine")
 
@@ -462,5 +457,4 @@ if statement_type == "Income Statement":
 elif statement_type == "Balance Sheet":
     render_balance_sheet_kpis(statement_df)
 else:
-    st.info("Cash Flow KPIs not implemented yet. Next step: add Operating Cash Flow metrics.")
-
+    st.info("Cash Flow KPIs not implemented yet.")

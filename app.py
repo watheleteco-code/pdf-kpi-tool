@@ -116,32 +116,50 @@ def extract_tables_with_pdfplumber(file, max_pages: int = 10):
 if uploaded_file is not None:
     st.success("PDF uploaded successfully")
     st.write(f"Filename: {uploaded_file.name}")
+if uploaded_file is not None:
+    st.success("PDF uploaded successfully")
+    st.write(f"Filename: {uploaded_file.name}")
 
+    # 1. Check if PDF is text-based
     if not is_text_based_pdf(uploaded_file):
         st.error("Scanned PDF detected ⚠️")
-        if len(tables) == 0:
-    st.error("No tables could be extracted with available methods.")
-    st.stop()
-
+        st.warning(
+            "This PDF appears to be scanned (image-based). "
+            "Automatic table extraction may not work without OCR."
+        )
+        st.stop()
 
     st.success("Text-based PDF detected ✅")
 
-    max_pages = st.slider("Pages to scan (from start)", min_value=1, max_value=50, value=15)
+    # 2. Page scan control
+    max_pages = st.slider(
+        "Pages to scan (from start)",
+        min_value=1,
+        max_value=50,
+        value=15
+    )
 
+    # 3. Try pdfplumber extraction
     with st.spinner("Extracting tables from the PDF..."):
-        tables = extract_tables_with_pdfplumber(uploaded_file, max_pages=max_pages)
+        tables = extract_tables_with_pdfplumber(
+            uploaded_file,
+            max_pages=max_pages
+        )
 
-if len(tables) == 0:
-    st.info("No tables found with pdfplumber. Trying Camelot...")
-    tables = extract_tables_with_camelot(uploaded_file, max_pages=max_pages)
+    # 4. Fallback to Camelot if needed
+    if len(tables) == 0:
+        st.info("No tables found with pdfplumber. Trying Camelot...")
+        tables = extract_tables_with_camelot(
+            uploaded_file,
+            max_pages=max_pages
+        )
 
+    # 5. Final check
     st.write(f"Tables found: **{len(tables)}**")
 
     if len(tables) == 0:
-        if len(tables) == 0:
-    st.error("No tables could be extracted with available methods.")
-    st.stop()
-
+        st.error("No tables could be extracted with available methods.")
+        st.stop()
 
     options = [
         f"Page {t['page']} — Table {t['table_index']} ({t['df'].shape[0]}x{t['df'].shape[1]})"

@@ -1,12 +1,45 @@
 import streamlit as st
 import pdfplumber
 import pandas as pd
+import camelot
 
 st.set_page_config(page_title="PDF KPI Tool", layout="wide")
 st.title("PDF Financial Statement Analyzer")
 
 uploaded_file = st.file_uploader("Upload a financial statement PDF", type=["pdf"])
 
+def extract_tables_with_camelot(file, max_pages: int = 10):
+    tables = []
+    pages = ",".join(str(i) for i in range(1, max_pages + 1))
+
+    try:
+        camelot_tables = camelot.read_pdf(
+            file,
+            pages=pages,
+            flavor="stream"
+        )
+
+        for i, table in enumerate(camelot_tables):
+            df = table.df
+
+            df = df.dropna(how="all")
+            df = df.dropna(axis=1, how="all")
+
+            if df.shape[0] < 2 or df.shape[1] < 2:
+                continue
+
+            tables.append(
+                {
+                    "page": "unknown",
+                    "table_index": i + 1,
+                    "df": df
+                }
+            )
+
+    except Exception as e:
+        st.warning(f"Camelot failed: {e}")
+
+    return tables
 
 def is_text_based_pdf(file) -> bool:
     try:
@@ -86,8 +119,10 @@ if uploaded_file is not None:
 
     if not is_text_based_pdf(uploaded_file):
         st.error("Scanned PDF detected ⚠️")
-        st.warning("This PDF appears to be scanned (image-based). Extraction may not work without OCR.")
-        st.stop()
+        if len(tables) == 0:
+    st.error("No tables could be extracted with available methods.")
+    st.stop()
+
 
     st.success("Text-based PDF detected ✅")
 
@@ -96,11 +131,17 @@ if uploaded_file is not None:
     with st.spinner("Extracting tables from the PDF..."):
         tables = extract_tables_with_pdfplumber(uploaded_file, max_pages=max_pages)
 
+if len(tables) == 0:
+    st.info("No tables found with pdfplumber. Trying Camelot...")
+    tables = extract_tables_with_camelot(uploaded_file, max_pages=max_pages)
+
     st.write(f"Tables found: **{len(tables)}**")
 
     if len(tables) == 0:
-        st.warning("No tables extracted. Next we can add a Camelot fallback extractor.")
-        st.stop()
+        if len(tables) == 0:
+    st.error("No tables could be extracted with available methods.")
+    st.stop()
+
 
     options = [
         f"Page {t['page']} — Table {t['table_index']} ({t['df'].shape[0]}x{t['df'].shape[1]})"

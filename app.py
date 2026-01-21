@@ -114,6 +114,12 @@ def extract_tables_with_camelot(file, max_pages: int = 10):
 
 NUM_PATTERN = r"\(?-?\d[\d,]*\.?\d*\)?"
 
+HEADER_KEYWORDS = [
+    "years ended", "year ended", "for the year ended",
+    "years ended december", "year ended december",
+    "unaudited", "in thousands", "in millions"
+]
+
 def extract_lines(file, max_pages: int = 10):
     lines = []
     with pdfplumber.open(file) as pdf:
@@ -139,27 +145,56 @@ def detect_years(lines):
 
 
 def parse_text_aligned_statement(lines, years=None):
-    """
-    Parse lines into: label + 2 numeric cols (typical 2-year statements).
-    Returns a DataFrame or None.
-    """
     rows = []
+    year_set = set(years or [])
 
     for line in lines:
+        lower = line.lower()
+
+        # 1) Skip header / meta lines
+        if any(k in lower for k in HEADER_KEYWORDS):
+            continue
+
+        # 2) Find numeric tokens
         nums = re.findall(NUM_PATTERN, line)
-        if len(nums) >= 2:
-            first = nums[0]
-            idx = line.find(first)
-            label = line[:idx].strip(" .:-\t")
-            if len(label) < 2:
-                continue
+        if len(nums) < 2:
+            continue
 
-            v1 = clean_number(nums[0])
-            v2 = clean_number(nums[1])
-            if v1 is None and v2 is None:
+        # 3) Remove pure year tokens from candidates (e.g., 2003, 2004)
+        filtered = []
+        for tok in nums:
+            tok_clean = tok.strip("()").replace(",", "")
+            if tok_clean in year_set:
                 continue
+            filtered.append(tok)
 
-            rows.append([label, v1, v2])
+        # After removing years, we still need at least 2 values
+        if len(filtered) < 2:
+            continue
+
+        # 4) Extra guard: drop date-like lines (day number + year pattern)
+        # Example: "Years Ended December 31 2003" would have remaining "31" and maybe nothing else.
+        # If first value is 1..31 and no other big numbers, skip.
+        v1 = clean_number(filtered[0])
+        v2 = clean_number(filtered[1])
+
+        if v1 is not None and 1 <= v1 <= 31 and (v2 is None or abs(v2) < 1000):
+            continue
+
+        # 5) Label is before the first remaining numeric token
+        first = filtered[0]
+        idx = line.find(first)
+        label = line[:idx].strip(" .:-\t")
+        if len(label) < 2:
+            continue
+            
+# ---- LABEL NORMALIZATION ----
+label = re.sub(r"[.\u2026]+", " ", label)   # remove dotted leaders
+label = label.replace("$", "").strip()      # remove currency symbol
+label = re.sub(r"\s+", " ", label)          # normalize whitespace
+# ------------------------------------------------------------
+
+        rows.append([label, v1, v2])
 
     if not rows:
         return None

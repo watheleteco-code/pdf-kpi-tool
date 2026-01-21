@@ -16,6 +16,33 @@ def is_text_based_pdf(file) -> bool:
     except Exception:
         return False
 
+def clean_number(x):
+    if isinstance(x, str):
+        x = x.replace(",", "").strip()
+        if x.startswith("(") and x.endswith(")"):
+            x = "-" + x[1:-1]
+        if x in ["-", "", "–"]:
+            return None
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+        
+def normalize_table(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensures:
+    - first column = labels (string)
+    - other columns = numeric values
+    """
+    df = df.copy()
+    df.columns = range(df.shape[1])
+
+    # Rename first column
+    df.rename(columns={0: "label"}, inplace=True)
+
+    return df
+
 
 def extract_tables_with_pdfplumber(file, max_pages: int = 10):
     extracted = []
@@ -85,3 +112,19 @@ if uploaded_file is not None:
 
     st.subheader("Selected table preview")
     st.dataframe(tables[selected_idx]["df"], use_container_width=True)
+
+st.subheader("Statement type")
+statement_type = st.radio(
+    "What kind of statement is this table?",
+    ["Income Statement", "Balance Sheet", "Cash Flow Statement"]
+)
+
+raw_df = tables[selected_idx]["df"]
+df = normalize_table(raw_df)
+
+for col in df.columns[1:]:
+    df[col] = df[col].apply(clean_number)
+
+st.subheader("Normalized table")
+st.dataframe(df, use_container_width=True)
+

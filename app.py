@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pdfplumber
 import pandas as pd
@@ -8,40 +9,13 @@ st.title("PDF Financial Statement Analyzer")
 
 uploaded_file = st.file_uploader("Upload a financial statement PDF", type=["pdf"])
 
-def extract_tables_with_camelot(file, max_pages: int = 10):
-    tables = []
-    pages = ",".join(str(i) for i in range(1, max_pages + 1))
 
-    try:
-        camelot_tables = camelot.read_pdf(
-            file,
-            pages=pages,
-            flavor="stream"
-        )
-
-        for i, table in enumerate(camelot_tables):
-            df = table.df
-
-            df = df.dropna(how="all")
-            df = df.dropna(axis=1, how="all")
-
-            if df.shape[0] < 2 or df.shape[1] < 2:
-                continue
-
-            tables.append(
-                {
-                    "page": "unknown",
-                    "table_index": i + 1,
-                    "df": df
-                }
-            )
-
-    except Exception as e:
-        st.warning(f"Camelot failed: {e}")
-
-    return tables
+# -------------------------
+# Helpers
+# -------------------------
 
 def is_text_based_pdf(file) -> bool:
+    """Heuristic: text-based PDFs have a meaningful number of text chars."""
     try:
         with pdfplumber.open(file) as pdf:
             total_chars = sum(len(page.chars) for page in pdf.pages)
@@ -49,9 +23,11 @@ def is_text_based_pdf(file) -> bool:
     except Exception:
         return False
 
+
 def clean_number(x):
+    """Convert PDF-extracted numeric strings to float; handle commas and parentheses negatives."""
     if isinstance(x, str):
-        x = x.replace(",", "").strip()
+        x = x.replace(",", "").replace("$", "").strip()
         if x.startswith("(") and x.endswith(")"):
             x = "-" + x[1:-1]
         if x in ["-", "", "–"]:
@@ -61,30 +37,23 @@ def clean_number(x):
     except Exception:
         return None
 
-        
+
 def normalize_table(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ensures:
-    - first column = labels (string)
-    - other columns = numeric values
-    """
+    """Ensure first col is label, others are values."""
     df = df.copy()
     df.columns = range(df.shape[1])
-
-    # Rename first column
     df.rename(columns={0: "label"}, inplace=True)
-
     return df
 
 
 def extract_tables_with_pdfplumber(file, max_pages: int = 10):
+    """Extract tables with pdfplumber (works best for bordered/line-detected tables)."""
     extracted = []
     with pdfplumber.open(file) as pdf:
         num_pages = min(len(pdf.pages), max_pages)
 
         for page_idx in range(num_pages):
             page = pdf.pages[page_idx]
-
             tables = page.extract_tables(
                 table_settings={
                     "vertical_strategy": "lines",
@@ -101,76 +70,213 @@ def extract_tables_with_pdfplumber(file, max_pages: int = 10):
 
             for t_idx, table in enumerate(tables):
                 df = pd.DataFrame(table)
-
-                df = df.dropna(how="all")
-                df = df.dropna(axis=1, how="all")
-
+                df = df.dropna(how="all").dropna(axis=1, how="all")
                 if df.shape[0] < 2 or df.shape[1] < 2:
                     continue
-
                 extracted.append({"page": page_idx + 1, "table_index": t_idx + 1, "df": df})
 
     return extracted
 
 
-if uploaded_file is not None:
-    st.success("PDF uploaded successfully")
-    st.write(f"Filename: {uploaded_file.name}")
-if uploaded_file is not None:
-    st.success("PDF uploaded successfully")
-    st.write(f"Filename: {uploaded_file.name}")
+def extract_tables_with_camelot(file, max_pages: int = 10):
+    """
+    Try Camelot in both stream and lattice modes.
+    Some PDFs work only with one of them.
+    """
+    results = []
+    pages = ",".join(str(i) for i in range(1, max_pages + 1))
 
-    # 1. Check if PDF is text-based
-    if not is_text_based_pdf(uploaded_file):
-        st.error("Scanned PDF detected ⚠️")
-        st.warning(
-            "This PDF appears to be scanned (image-based). "
-            "Automatic table extraction may not work without OCR."
-        )
-        st.stop()
+    for flavor in ["stream", "lattice"]:
+        try:
+            camelot_tables = camelot.read_pdf(
+                file,
+                pages=pages,
+                flavor=flavor
+            )
 
-    st.success("Text-based PDF detected ✅")
+            for i, table in enumerate(camelot_tables):
+                df = table.df
+                df = df.dropna(how="all").dropna(axis=1, how="all")
+                if df.shape[0] < 2 or df.shape[1] < 2:
+                    continue
+                results.append({"page": f"{flavor}", "table_index": i + 1, "df": df})
 
-    # 2. Page scan control
-    max_pages = st.slider(
-        "Pages to scan (from start)",
-        min_value=1,
-        max_value=50,
-        value=15
+            if len(results) > 0:
+                return results
+
+        except Exception as e:
+            st.warning(f"Camelot ({flavor}) failed: {e}")
+
+    return results
+
+
+# ---------- Text-line fallback (works for “aligned text” statements) ----------
+
+NUM_PATTERN = r"\(?-?\d[\d,]*\.?\d*\)?"
+
+def extract_lines(file, max_pages: int = 10):
+    lines = []
+    with pdfplumber.open(file) as pdf:
+        for page_idx, page in enumerate(pdf.pages[:max_pages]):
+            text = page.extract_text() or ""
+            for line in text.splitlines():
+                line = line.strip()
+                if line:
+                    lines.append(line)
+    return lines
+
+
+def detect_years(lines):
+    """
+    Try to detect year headers like: '2003 2004' near the top of the statement.
+    If not found, returns None.
+    """
+    for line in lines[:25]:
+        years = re.findall(r"\b(?:19|20)\d{2}\b", line)
+        if len(years) >= 2:
+            return years[:2]
+    return None
+
+
+def parse_text_aligned_statement(lines, years=None):
+    """
+    Parse lines into: label + 2 numeric cols (typical 2-year statements).
+    Returns a DataFrame or None.
+    """
+    rows = []
+
+    for line in lines:
+        nums = re.findall(NUM_PATTERN, line)
+        if len(nums) >= 2:
+            first = nums[0]
+            idx = line.find(first)
+            label = line[:idx].strip(" .:-\t")
+            if len(label) < 2:
+                continue
+
+            v1 = clean_number(nums[0])
+            v2 = clean_number(nums[1])
+            if v1 is None and v2 is None:
+                continue
+
+            rows.append([label, v1, v2])
+
+    if not rows:
+        return None
+
+    if years and len(years) == 2:
+        cols = ["label", years[0], years[1]]
+    else:
+        cols = ["label", "value_1", "value_2"]
+
+    return pd.DataFrame(rows, columns=cols)
+
+
+def get_value_contains(df, label_contains: str, col: str):
+    hit = df[df["label"].str.contains(label_contains, case=False, na=False)]
+    if hit.empty:
+        return None
+    return hit.iloc[0][col]
+
+
+def safe_div(a, b):
+    if a is None or b in (None, 0):
+        return None
+    return a / b
+
+
+# -------------------------
+# Main app flow
+# -------------------------
+
+if uploaded_file is None:
+    st.stop()
+
+st.success("PDF uploaded successfully")
+st.write(f"Filename: {uploaded_file.name}")
+
+if not is_text_based_pdf(uploaded_file):
+    st.error("Scanned PDF detected ⚠️")
+    st.warning(
+        "This PDF appears to be scanned (image-based). "
+        "Automatic extraction may not work without OCR."
     )
+    st.stop()
 
-    # 3. Try pdfplumber extraction
-    with st.spinner("Extracting tables from the PDF..."):
-        tables = extract_tables_with_pdfplumber(
-            uploaded_file,
-            max_pages=max_pages
-        )
+st.success("Text-based PDF detected ✅")
 
-    # 4. Fallback to Camelot if needed
-    if len(tables) == 0:
-        st.info("No tables found with pdfplumber. Trying Camelot...")
-        tables = extract_tables_with_camelot(
-            uploaded_file,
-            max_pages=max_pages
-        )
+max_pages = st.slider("Pages to scan (from start)", min_value=1, max_value=50, value=15)
 
-    # 5. Final check
-    st.write(f"Tables found: **{len(tables)}**")
+# Try extractors
+with st.spinner("Extracting tables from the PDF..."):
+    tables = extract_tables_with_pdfplumber(uploaded_file, max_pages=max_pages)
 
-    if len(tables) == 0:
-        st.error("No tables could be extracted with available methods.")
+if len(tables) == 0:
+    st.info("No tables found with pdfplumber. Trying Camelot...")
+    tables = extract_tables_with_camelot(uploaded_file, max_pages=max_pages)
+
+st.write(f"Tables found: **{len(tables)}**")
+
+# If still nothing, do text-line parsing fallback
+if len(tables) == 0:
+    st.info("No tables extracted. Parsing as text-aligned statement...")
+    lines = extract_lines(uploaded_file, max_pages=max_pages)
+    years = detect_years(lines)
+    df_text = parse_text_aligned_statement(lines, years=years)
+
+    if df_text is None:
+        st.error("Could not parse statement from text.")
         st.stop()
 
-    options = [
-        f"Page {t['page']} — Table {t['table_index']} ({t['df'].shape[0]}x{t['df'].shape[1]})"
-        for t in tables
-    ]
+    st.subheader("Parsed statement (text-based)")
+    st.dataframe(df_text, use_container_width=True)
 
-    selected = st.selectbox("Select a table to preview", options=options, index=0)
-    selected_idx = options.index(selected)
+    # KPI selection UI for text-parsed income statement-like PDFs
+    st.subheader("KPI selection (text-parsed statements)")
+    cols = [c for c in df_text.columns if c != "label"]
+    year_col = st.selectbox("Select period/column", cols)
 
-    st.subheader("Selected table preview")
-    st.dataframe(tables[selected_idx]["df"], use_container_width=True)
+    kpi_options = ["Operating Margin", "Net Margin", "Expense Ratio", "Effective Tax Rate"]
+    selected_kpis = st.multiselect("Select KPIs", kpi_options, default=["Operating Margin", "Net Margin"])
+
+    total_sales = get_value_contains(df_text, "Total Sales", year_col)
+    total_expenses = get_value_contains(df_text, "Total Expenses", year_col)
+    operating_income = get_value_contains(df_text, "Operating Income", year_col)
+    taxes = get_value_contains(df_text, "Provision for Income Taxes", year_col)
+    net_income = get_value_contains(df_text, "Net Income", year_col)
+    nonop = get_value_contains(df_text, "Total Non-Operating", year_col)
+
+    st.subheader("KPI Results")
+
+    if "Operating Margin" in selected_kpis:
+        v = safe_div(operating_income, total_sales)
+        st.write("Operating Margin:", "N/A" if v is None else f"{v:.2%}")
+
+    if "Net Margin" in selected_kpis:
+        v = safe_div(net_income, total_sales)
+        st.write("Net Margin:", "N/A" if v is None else f"{v:.2%}")
+
+    if "Expense Ratio" in selected_kpis:
+        v = safe_div(total_expenses, total_sales)
+        st.write("Expense Ratio:", "N/A" if v is None else f"{v:.2%}")
+
+    if "Effective Tax Rate" in selected_kpis:
+        ebt = None if operating_income is None else operating_income + (nonop or 0)
+        v = safe_div(taxes, ebt)
+        st.write("Effective Tax Rate:", "N/A" if v is None else f"{v:.2%}")
+
+    st.stop()
+
+# If we have tables, show table picker + statement type + normalization
+options = [
+    f"Page {t['page']} — Table {t['table_index']} ({t['df'].shape[0]}x{t['df'].shape[1]})"
+    for t in tables
+]
+selected = st.selectbox("Select a table to preview", options=options, index=0)
+selected_idx = options.index(selected)
+
+st.subheader("Selected table preview")
+st.dataframe(tables[selected_idx]["df"], use_container_width=True)
 
 st.subheader("Statement type")
 statement_type = st.radio(
@@ -186,4 +292,3 @@ for col in df.columns[1:]:
 
 st.subheader("Normalized table")
 st.dataframe(df, use_container_width=True)
-

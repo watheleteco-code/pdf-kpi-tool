@@ -186,15 +186,16 @@ def parse_text_aligned_statement(lines, years=None):
         idx = line.find(first)
         label = line[:idx].strip(" .:-\t")
         if len(label) < 2:
-            continue
-            
-# ---- LABEL NORMALIZATION ----
-label = re.sub(r"[.\u2026]+", " ", label)   # remove dotted leaders
-label = label.replace("$", "").strip()      # remove currency symbol
-label = re.sub(r"\s+", " ", label)          # normalize whitespace
-# ------------------------------------------------------------
+         continue
 
-        rows.append([label, v1, v2])
+        # ---- LABEL NORMALIZATION ----
+        label = re.sub(r"[.\u2026]+", " ", label)   # remove dotted leaders
+        label = label.replace("$", "").strip()      # remove currency symbol
+        label = re.sub(r"\s+", " ", label)          # normalize whitespace
+        # ----------------------------
+
+rows.append([label, v1, v2])
+
 
     if not rows:
         return None

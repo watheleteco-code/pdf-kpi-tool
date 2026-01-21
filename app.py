@@ -11,6 +11,8 @@ uploaded_file = st.file_uploader(
     type=["pdf"]
 )
 
+max_pages = st.slider("Pages to scan (from start)", min_value=1, max_value=50, value=15)
+tables = extract_tables_with_pdfplumber(uploaded_file, max_pages=max_pages)
 
 def is_text_based_pdf(file) -> bool:
     try:

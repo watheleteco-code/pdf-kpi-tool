@@ -120,6 +120,26 @@ HEADER_KEYWORDS = [
 
 NUM_PATTERN = r"\(?-?\d[\d,]*\.?\d*\)?"
 
+BALANCE_SHEET_ITEMS = [
+    "Cash",
+    "Current Assets",
+    "Current Liabilities",
+    "Total Assets",
+    "Total Liabilities",
+    "Equity",
+    "Total Debt"
+]
+
+balance_kpis = [
+    "Current Ratio",
+    "Cash Ratio",
+    "Debt to Equity",
+    "Debt Ratio"
+]
+
+current_ratio = values["Current Assets"] / values["Current Liabilities"]
+debt_to_equity = values["Total Debt"] / values["Equity"]
+
 def extract_lines(file, max_pages: int = 10):
     lines = []
     with pdfplumber.open(file) as pdf:

@@ -292,25 +292,39 @@ def render_income_statement_kpis(statement_df: pd.DataFrame):
 def render_balance_sheet_kpis(statement_df: pd.DataFrame):
     st.subheader("KPI selection (Balance Sheet)")
 
+    # choose year/period column
     cols = [c for c in statement_df.columns if c != "label"]
     year_col = st.selectbox("Select period/column", cols, key="bs_year")
 
-    labels = statement_df["label"].tolist()
-    auto_mapping = auto_map_labels(labels, CANONICAL_MATCHERS, threshold=0.65)
+    # helper to get values by "contains"
+    def v(contains: str):
+        return get_value_contains(statement_df, contains, year_col)
 
-    # Build values directly from auto-mapping (no UI)
-    values = {}
-    for item, chosen_label in auto_mapping.items():
-        if chosen_label == "(not mapped)":
-            values[item] = None
-        else:
-            values[item] = get_value_exact(statement_df, chosen_label, year_col)
+    # --- Auto-extract core inputs from THIS type of balance sheet ---
+    cash = v("Cash")
+    current_assets = v("Total current assets")
+    current_liabilities = v("Total current liabilities")
+    total_assets = v("Total assets")
+    equity = v("Total owners")  # matches "Total owners' equity"
 
-    # Optional: show what the system matched (transparent, but not interactive)
-    with st.expander("Show detected line items"):
-        for item, chosen_label in auto_mapping.items():
-            st.write(f"**{item}** → {chosen_label}")
+    # debt components (often split)
+    note_payable = v("Note payable")
+    long_term_debt = v("Long-term debt")
 
+    # Derived metrics
+    total_debt = None
+    if note_payable is not None or long_term_debt is not None:
+        total_debt = (note_payable or 0) + (long_term_debt or 0)
+
+    total_liabilities = None
+    if current_liabilities is not None or long_term_debt is not None:
+        total_liabilities = (current_liabilities or 0) + (long_term_debt or 0)
+
+    # If totals missing, try to derive liabilities from Assets - Equity
+    if total_liabilities is None and total_assets is not None and equity is not None:
+        total_liabilities = total_assets - equity
+
+    # KPIs
     balance_kpis = [
         "Current Ratio",
         "Cash Ratio",
@@ -318,32 +332,48 @@ def render_balance_sheet_kpis(statement_df: pd.DataFrame):
         "Debt Ratio",
         "Equity Ratio",
     ]
-
     selected_kpis = st.multiselect(
-        "Select KPIs", balance_kpis, default=["Current Ratio", "Debt Ratio"], key="bs_kpis"
+        "Select KPIs",
+        balance_kpis,
+        default=["Current Ratio", "Debt Ratio"],
+        key="bs_kpis",
     )
+
+    # Optional transparency (not interactive)
+    with st.expander("Show detected values (auto)"):
+        st.write({
+            "cash": cash,
+            "current_assets": current_assets,
+            "current_liabilities": current_liabilities,
+            "total_assets": total_assets,
+            "equity": equity,
+            "note_payable": note_payable,
+            "long_term_debt": long_term_debt,
+            "total_debt (derived)": total_debt,
+            "total_liabilities (derived)": total_liabilities,
+        })
 
     st.subheader("KPI Results")
 
     if "Current Ratio" in selected_kpis:
-        v = safe_div(values.get("Current Assets"), values.get("Current Liabilities"))
-        st.write("Current Ratio:", "N/A" if v is None else f"{v:.2f}")
+        r = safe_div(current_assets, current_liabilities)
+        st.write("Current Ratio:", "N/A" if r is None else f"{r:.2f}")
 
     if "Cash Ratio" in selected_kpis:
-        v = safe_div(values.get("Cash"), values.get("Current Liabilities"))
-        st.write("Cash Ratio:", "N/A" if v is None else f"{v:.2f}")
+        r = safe_div(cash, current_liabilities)
+        st.write("Cash Ratio:", "N/A" if r is None else f"{r:.2f}")
 
     if "Debt to Equity" in selected_kpis:
-        v = safe_div(values.get("Total Debt"), values.get("Equity"))
-        st.write("Debt to Equity:", "N/A" if v is None else f"{v:.2f}")
+        r = safe_div(total_debt, equity)
+        st.write("Debt to Equity:", "N/A" if r is None else f"{r:.2f}")
 
     if "Debt Ratio" in selected_kpis:
-        v = safe_div(values.get("Total Liabilities"), values.get("Total Assets"))
-        st.write("Debt Ratio:", "N/A" if v is None else f"{v:.2%}")
+        r = safe_div(total_liabilities, total_assets)
+        st.write("Debt Ratio:", "N/A" if r is None else f"{r:.2%}")
 
     if "Equity Ratio" in selected_kpis:
-        v = safe_div(values.get("Equity"), values.get("Total Assets"))
-        st.write("Equity Ratio:", "N/A" if v is None else f"{v:.2%}")
+        r = safe_div(equity, total_assets)
+        st.write("Equity Ratio:", "N/A" if r is None else f"{r:.2%}")
 
 
 

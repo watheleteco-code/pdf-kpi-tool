@@ -137,8 +137,65 @@ balance_kpis = [
     "Debt Ratio"
 ]
 
-current_ratio = values["Current Assets"] / values["Current Liabilities"]
-debt_to_equity = values["Total Debt"] / values["Equity"]
+# --- Choose which period/column to use ---
+cols = [c for c in df_text.columns if c != "label"]
+year_col = st.selectbox("Select period/column", cols, key="bs_year_col")
+
+labels = df_text["label"].tolist()
+
+st.subheader("Map balance sheet rows to financial concepts")
+
+# --- Mapping UI ---
+mapping = {}
+for item in BALANCE_SHEET_ITEMS:
+    mapping[item] = st.selectbox(
+        f"{item}",
+        options=["(not mapped)"] + labels,
+        index=0,
+        key=f"map_bs_{item}"
+    )
+
+# --- Helpers ---
+def get_value_exact(df, label: str, col: str):
+    hit = df[df["label"] == label]
+    if hit.empty:
+        return None
+    return hit.iloc[0][col]
+
+def safe_div(a, b):
+    if a is None or b is None or b == 0:
+        return None
+    return a / b
+
+# --- Build values dict (THIS is what you are missing) ---
+values = {}
+for item, chosen_label in mapping.items():
+    if chosen_label == "(not mapped)":
+        values[item] = None
+    else:
+        values[item] = get_value_exact(df_text, chosen_label, year_col)
+
+# --- KPI selection ---
+selected_kpis = st.multiselect("Select KPIs", balance_kpis, default=["Current Ratio", "Debt Ratio"], key="bs_kpis")
+
+st.subheader("KPI Results")
+
+if "Current Ratio" in selected_kpis:
+    v = safe_div(values["Current Assets"], values["Current Liabilities"])
+    st.write("Current Ratio:", "N/A" if v is None else f"{v:.2f}")
+
+if "Cash Ratio" in selected_kpis:
+    v = safe_div(values["Cash"], values["Current Liabilities"])
+    st.write("Cash Ratio:", "N/A" if v is None else f"{v:.2f}")
+
+if "Debt to Equity" in selected_kpis:
+    v = safe_div(values["Total Debt"], values["Equity"])
+    st.write("Debt to Equity:", "N/A" if v is None else f"{v:.2f}")
+
+if "Debt Ratio" in selected_kpis:
+    v = safe_div(values["Total Liabilities"], values["Total Assets"])
+    st.write("Debt Ratio:", "N/A" if v is None else f"{v:.2%}")
+
 
 def extract_lines(file, max_pages: int = 10):
     lines = []

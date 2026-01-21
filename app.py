@@ -1,4 +1,6 @@
 import re
+from difflib import SequenceMatcher
+
 import streamlit as st
 import pdfplumber
 import pandas as pd
@@ -204,7 +206,49 @@ def get_value_exact(df, label: str, col: str):
 
 
 # -------------------------
-# KPI logic
+# Auto-mapping (preselect dropdowns)
+# -------------------------
+
+CANONICAL_MATCHERS = {
+    "Cash": ["cash", "cash and equivalents"],
+    "Current Assets": ["current assets", "total current assets"],
+    "Current Liabilities": ["current liabilities", "total current liabilities"],
+    "Total Assets": ["total assets"],
+    "Total Liabilities": ["total liabilities"],
+    "Equity": ["equity", "shareholders equity", "stockholders equity"],
+    "Total Debt": ["total debt", "long-term debt", "borrowings", "notes payable", "debt"],
+}
+
+
+def normalize_label(s: str) -> str:
+    return re.sub(r"[^a-z]", "", s.lower())
+
+
+def auto_map_labels(statement_labels, matchers, threshold: float = 0.65):
+    mapping = {}
+    norm_labels = {lbl: normalize_label(lbl) for lbl in statement_labels}
+
+    for item, keywords in matchers.items():
+        best_match = None
+        best_score = 0.0
+
+        for lbl, norm_lbl in norm_labels.items():
+            for kw in keywords:
+                score = SequenceMatcher(None, norm_lbl, normalize_label(kw)).ratio()
+                if score > best_score:
+                    best_score = score
+                    best_match = lbl
+
+        if best_score >= threshold and best_match is not None:
+            mapping[item] = best_match
+        else:
+            mapping[item] = "(not mapped)"
+
+    return mapping
+
+
+# -------------------------
+# KPI rendering
 # -------------------------
 
 def render_income_statement_kpis(statement_df: pd.DataFrame):
@@ -214,7 +258,9 @@ def render_income_statement_kpis(statement_df: pd.DataFrame):
     year_col = st.selectbox("Select period/column", cols, key="is_year")
 
     kpi_options = ["Operating Margin", "Net Margin", "Expense Ratio", "Effective Tax Rate"]
-    selected_kpis = st.multiselect("Select KPIs", kpi_options, default=["Operating Margin", "Net Margin"], key="is_kpis")
+    selected_kpis = st.multiselect(
+        "Select KPIs", kpi_options, default=["Operating Margin", "Net Margin"], key="is_kpis"
+    )
 
     total_sales = get_value_contains(statement_df, "Total Sales", year_col)
     total_expenses = get_value_contains(statement_df, "Total Expenses", year_col)
@@ -269,12 +315,18 @@ def render_balance_sheet_kpis(statement_df: pd.DataFrame):
 
     labels = statement_df["label"].tolist()
 
+    auto_mapping = auto_map_labels(labels, CANONICAL_MATCHERS, threshold=0.65)
+
     mapping = {}
     for item in BALANCE_SHEET_ITEMS:
+        options = ["(not mapped)"] + labels
+        default = auto_mapping.get(item, "(not mapped)")
+        index = options.index(default) if default in options else 0
+
         mapping[item] = st.selectbox(
             f"{item}",
-            options=["(not mapped)"] + labels,
-            index=0,
+            options=options,
+            index=index,
             key=f"map_bs_{item}",
         )
 
@@ -286,7 +338,9 @@ def render_balance_sheet_kpis(statement_df: pd.DataFrame):
             values[item] = get_value_exact(statement_df, chosen_label, year_col)
 
     st.subheader("KPI selection (Balance Sheet)")
-    selected_kpis = st.multiselect("Select KPIs", balance_kpis, default=["Current Ratio", "Debt Ratio"], key="bs_kpis")
+    selected_kpis = st.multiselect(
+        "Select KPIs", balance_kpis, default=["Current Ratio", "Debt Ratio"], key="bs_kpis"
+    )
 
     st.subheader("KPI Results")
 
@@ -397,3 +451,4 @@ elif statement_type == "Balance Sheet":
     render_balance_sheet_kpis(statement_df)
 else:
     st.info("Cash Flow KPIs not implemented yet. Next step: add Operating Cash Flow metrics.")
+

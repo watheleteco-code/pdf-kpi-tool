@@ -211,11 +211,11 @@ def get_value_exact(df, label: str, col: str):
 
 CANONICAL_MATCHERS = {
     "Cash": ["cash", "cash and equivalents"],
-    "Current Assets": ["current assets", "total current assets"],
-    "Current Liabilities": ["current liabilities", "total current liabilities"],
+    "Current Assets": ["total current assets", "current assets"],
+    "Current Liabilities": ["total current liabilities", "current liabilities"],
     "Total Assets": ["total assets"],
     "Total Liabilities": ["total liabilities"],
-    "Equity": ["equity", "shareholders equity", "stockholders equity"],
+    "Equity": ["total equity", "equity", "shareholders equity", "stockholders equity"],
     "Total Debt": ["total debt", "long-term debt", "borrowings", "notes payable", "debt"],
 }
 
@@ -290,17 +290,26 @@ def render_income_statement_kpis(statement_df: pd.DataFrame):
 
 
 def render_balance_sheet_kpis(statement_df: pd.DataFrame):
-    st.subheader("Map balance sheet rows to financial concepts")
+    st.subheader("KPI selection (Balance Sheet)")
 
-    BALANCE_SHEET_ITEMS = [
-        "Cash",
-        "Current Assets",
-        "Current Liabilities",
-        "Total Assets",
-        "Total Liabilities",
-        "Equity",
-        "Total Debt",
-    ]
+    cols = [c for c in statement_df.columns if c != "label"]
+    year_col = st.selectbox("Select period/column", cols, key="bs_year")
+
+    labels = statement_df["label"].tolist()
+    auto_mapping = auto_map_labels(labels, CANONICAL_MATCHERS, threshold=0.65)
+
+    # Build values directly from auto-mapping (no UI)
+    values = {}
+    for item, chosen_label in auto_mapping.items():
+        if chosen_label == "(not mapped)":
+            values[item] = None
+        else:
+            values[item] = get_value_exact(statement_df, chosen_label, year_col)
+
+    # Optional: show what the system matched (transparent, but not interactive)
+    with st.expander("Show detected line items"):
+        for item, chosen_label in auto_mapping.items():
+            st.write(f"**{item}** → {chosen_label}")
 
     balance_kpis = [
         "Current Ratio",
@@ -310,34 +319,6 @@ def render_balance_sheet_kpis(statement_df: pd.DataFrame):
         "Equity Ratio",
     ]
 
-    cols = [c for c in statement_df.columns if c != "label"]
-    year_col = st.selectbox("Select period/column", cols, key="bs_year")
-
-    labels = statement_df["label"].tolist()
-
-    auto_mapping = auto_map_labels(labels, CANONICAL_MATCHERS, threshold=0.65)
-
-    mapping = {}
-    for item in BALANCE_SHEET_ITEMS:
-        options = ["(not mapped)"] + labels
-        default = auto_mapping.get(item, "(not mapped)")
-        index = options.index(default) if default in options else 0
-
-        mapping[item] = st.selectbox(
-            f"{item}",
-            options=options,
-            index=index,
-            key=f"map_bs_{item}",
-        )
-
-    values = {}
-    for item, chosen_label in mapping.items():
-        if chosen_label == "(not mapped)":
-            values[item] = None
-        else:
-            values[item] = get_value_exact(statement_df, chosen_label, year_col)
-
-    st.subheader("KPI selection (Balance Sheet)")
     selected_kpis = st.multiselect(
         "Select KPIs", balance_kpis, default=["Current Ratio", "Debt Ratio"], key="bs_kpis"
     )
@@ -345,24 +326,25 @@ def render_balance_sheet_kpis(statement_df: pd.DataFrame):
     st.subheader("KPI Results")
 
     if "Current Ratio" in selected_kpis:
-        v = safe_div(values["Current Assets"], values["Current Liabilities"])
+        v = safe_div(values.get("Current Assets"), values.get("Current Liabilities"))
         st.write("Current Ratio:", "N/A" if v is None else f"{v:.2f}")
 
     if "Cash Ratio" in selected_kpis:
-        v = safe_div(values["Cash"], values["Current Liabilities"])
+        v = safe_div(values.get("Cash"), values.get("Current Liabilities"))
         st.write("Cash Ratio:", "N/A" if v is None else f"{v:.2f}")
 
     if "Debt to Equity" in selected_kpis:
-        v = safe_div(values["Total Debt"], values["Equity"])
+        v = safe_div(values.get("Total Debt"), values.get("Equity"))
         st.write("Debt to Equity:", "N/A" if v is None else f"{v:.2f}")
 
     if "Debt Ratio" in selected_kpis:
-        v = safe_div(values["Total Liabilities"], values["Total Assets"])
+        v = safe_div(values.get("Total Liabilities"), values.get("Total Assets"))
         st.write("Debt Ratio:", "N/A" if v is None else f"{v:.2%}")
 
     if "Equity Ratio" in selected_kpis:
-        v = safe_div(values["Equity"], values["Total Assets"])
+        v = safe_div(values.get("Equity"), values.get("Total Assets"))
         st.write("Equity Ratio:", "N/A" if v is None else f"{v:.2%}")
+
 
 
 # -------------------------
